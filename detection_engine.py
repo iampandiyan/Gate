@@ -31,23 +31,24 @@ class AIEngine:
         """
         if self.model is None: return None, 0, None
 
-        # A. Preprocess for RT-DETR
+        # 1. Preprocess for RT-DETR
         pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         inputs = self.processor(images=pil_img, return_tensors="pt").to(self.device)
 
-        # B. Inference
+        # 2. Inference
         with torch.no_grad():
             outputs = self.model(**inputs)
 
-        # C. Post-process (Filter low confidence)
+        # 3. Post-process (Filter low confidence)
         target_sizes = torch.tensor([pil_img.size[::-1]]).to(self.device)
         results = self.processor.post_process_object_detection(outputs, target_sizes=target_sizes, threshold=0.5)[0]
 
-        best_text = None
-        best_conf = 0.0
-        best_crop = None
+        # Screen dimensions for Position Filter
+        frame_h, frame_w, _ = frame.shape
+        center_x_min = frame_w * 0.20  # Left boundary (20%)
+        center_x_max = frame_w * 0.80  # Right boundary (80%)
 
-        # D. Loop through detections (usually just 1 plate)
+        # 4. Loop through detections
         for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
             if score < 0.5: continue
             
@@ -55,28 +56,80 @@ class AIEngine:
             box = [round(i, 2) for i in box.tolist()]
             x, y, x2, y2 = map(int, box)
             
-            # Crop Plate
-            h, w, _ = frame.shape
+            # Boundary Checks (ensure within frame)
             x, y = max(0, x), max(0, y)
-            x2, y2 = min(w, x2), min(h, y2)
+            x2, y2 = min(frame_w, x2), min(frame_h, y2)
             
+            # --- FILTER 1: Aspect Ratio & Size ---
+            w_box = x2 - x
+            h_box = y2 - y
+            if w_box == 0 or h_box == 0: continue
+            
+            area = w_box * h_box
+            aspect_ratio = w_box / h_box
+            
+            # Reject if too small (far away)
+            if area < 3000: 
+                # print(f"Skipping: Too small (Area: {area})")
+                continue
+            
+            # Reject if weird shape (Indian plates are approx 2.0 to 4.5 ratio)
+            # We allow 1.5 to 6.0 to be safe
+            if aspect_ratio < 1.5 or aspect_ratio > 6.0:
+                # print(f"Skipping: Bad shape (Ratio: {aspect_ratio:.2f})")
+                continue
+
+            # --- FILTER 2: Center Screen Check ---
+            plate_center_x = x + (w_box / 2)
+            # Only process if plate is mostly in the center zone
+            if not (center_x_min < plate_center_x < center_x_max):
+                # print("Skipping: Plate on edge")
+                continue
+
+            # Crop Plate
             plate_crop = frame[y:y2, x:x2]
             if plate_crop.size == 0: continue
 
-            # E. Run OCR on the Crop
-            # Optional: Upscale crop for better OCR
+            # --- FILTER 3: Blur Detection ---
+            # Using Laplacian Variance to detect motion blur
+            gray_plate = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+            blur_score = cv2.Laplacian(gray_plate, cv2.CV_64F).var()
+            
+            # Threshold: < 100 is usually blurry. 
+            if blur_score < 80: 
+                # print(f"Skipping: Too blurry (Score: {blur_score:.1f})")
+                continue
+            
+            # === PASSED ALL CHECKS -> RUN OCR ===
+            print(f"⚡ Processing Plate (Conf: {score:.2f} | Blur: {blur_score:.0f})")
+
+            # A. Upscale for better OCR
             scale = 2.0
             enhanced = cv2.resize(plate_crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
             
-            ocr_result = self.reader.readtext(enhanced)
+            # B. Run EasyOCR
+            # Returns: [(bbox, text, prob), ...]
+            ocr_results = self.reader.readtext(enhanced)
             
-            # Join text chunks (e.g., "TN", "05", "AA", "1234")
-            full_text = "".join([res[1] for res in ocr_result])
-            
-            # F. Clean Text (Remove special chars, only A-Z and 0-9)
+            # C. Collect Valid Segments
+            valid_segments = []
+            for (bbox, text, prob) in ocr_results:
+                if prob > 0.3: # Filter garbage reads
+                    x_start = bbox[0][0]
+                    valid_segments.append((x_start, text, prob))
+
+            # D. CRITICAL: SORT LEFT-TO-RIGHT
+            # This fixes "01 MH" -> "MH 01" issue
+            valid_segments.sort(key=lambda x: x[0])
+
+            # E. Join and Clean
+            full_text = "".join([seg[1] for seg in valid_segments])
             clean_text = re.sub(r'[^A-Z0-9]', '', full_text.upper())
             
-            if len(clean_text) > 4: # Minimum length for a valid plate
+            # F. Final Check
+            if len(clean_text) > 4:
                 return clean_text, score.item(), plate_crop
 
         return None, 0, None
+
+

@@ -148,7 +148,7 @@ class SmartGateApp(QMainWindow):
             self.lbl_plate.setText(text)
         else:
             print("❌ Entry Rejected")
-            
+
     def setup_sidebar(self):
         sidebar = QFrame()
         sidebar.setFixedWidth(250)
@@ -171,18 +171,27 @@ class SmartGateApp(QMainWindow):
         lbl_user.setStyleSheet("color: #666; padding-left: 20px; font-size: 12px; margin-top: 10px; margin-bottom: 10px;")
         layout.addWidget(lbl_user)
 
-        # Navigation Buttons
+        # --- MENU BUTTONS ---
+        
+        # 1. Home
         self.btn_home = SidebarButton("  📷  Live Monitor")
         self.btn_home.setChecked(True)
         self.btn_home.clicked.connect(lambda: self.pages.setCurrentIndex(0))
         
+        # 2. Manual Entry (NEW BUTTON)
+        self.btn_manual = SidebarButton("  ✍  Manual Entry")
+        self.btn_manual.clicked.connect(self.open_manual_entry)
+        
+        # 3. Logs
         self.btn_logs = SidebarButton("  📋  Entry Logs")
         self.btn_logs.clicked.connect(lambda: self.pages.setCurrentIndex(1))
         
+        # 4. Settings
         self.btn_settings = SidebarButton("  ⚙  Settings")
         self.btn_settings.clicked.connect(lambda: self.pages.setCurrentIndex(2))
 
         layout.addWidget(self.btn_home)
+        layout.addWidget(self.btn_manual) # Added here
         layout.addWidget(self.btn_logs)
         layout.addWidget(self.btn_settings)
         
@@ -208,50 +217,20 @@ class SmartGateApp(QMainWindow):
 
     def create_home_page(self):
         page = QWidget()
-        layout = QHBoxLayout() # Split Video vs Info
+        layout = QVBoxLayout()
         
-        # LEFT: Video Feed
-        video_container = QWidget()
-        v_layout = QVBoxLayout()
-        
+        # Header
         lbl_head = QLabel("Live Camera Feed")
-        lbl_head.setStyleSheet("color: white; font-size: 16px; font-weight: bold;")
-        v_layout.addWidget(lbl_head)
+        lbl_head.setStyleSheet("color: white; font-size: 18px; font-weight: bold; padding: 10px;")
+        layout.addWidget(lbl_head)
         
+        # Video Area (Now Full Width)
         self.lbl_video = QLabel()
-        self.lbl_video.setStyleSheet("background-color: black; border-radius: 8px;")
-        self.lbl_video.setMinimumSize(640, 480)
+        self.lbl_video.setStyleSheet("background-color: black; border-radius: 8px; border: 2px solid #333;")
         self.lbl_video.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        v_layout.addWidget(self.lbl_video)
+        self.lbl_video.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
-        video_container.setLayout(v_layout)
-        
-        # RIGHT: Quick Info
-        info_container = QFrame()
-        info_container.setFixedWidth(350)
-        info_container.setStyleSheet("background-color: #252525; border-left: 1px solid #333;")
-        i_layout = QVBoxLayout()
-        
-        lbl_last = QLabel("Last Detected Vehicle")
-        lbl_last.setStyleSheet("color: #aaa; font-size: 12px;")
-        
-        self.lbl_plate = QLabel("---")
-        self.lbl_plate.setFont(QFont("Consolas", 36, QFont.Weight.Bold))
-        self.lbl_plate.setStyleSheet("color: #00ff00; margin-bottom: 20px;")
-        self.lbl_plate.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        btn_manual = QPushButton("Manual Entry")
-        btn_manual.setStyleSheet("background-color: #0078d7; color: white; padding: 12px; font-weight: bold; border-radius: 4px;")
-        
-        i_layout.addWidget(lbl_last)
-        i_layout.addWidget(self.lbl_plate)
-        i_layout.addWidget(btn_manual)
-        i_layout.addStretch()
-        
-        info_container.setLayout(i_layout)
-
-        layout.addWidget(video_container)
-        layout.addWidget(info_container)
+        layout.addWidget(self.lbl_video)
         page.setLayout(layout)
         return page
 
@@ -293,12 +272,26 @@ class SmartGateApp(QMainWindow):
         return page
 
     def update_image(self, qt_img):
-        # Only update if we are on the Home Page to save resources
-        if self.pages.currentIndex() == 0:
-            self.lbl_video.setPixmap(QPixmap.fromImage(qt_img))
+        # 1. Always keep the QPixmap ready
+        pixmap = QPixmap.fromImage(qt_img)
+        
+        # 2. Update the label ONLY. 
+        # Since the widget is in a QStackedWidget, it exists but is just hidden.
+        # Updating a hidden widget is cheap.
+        self.lbl_video.setPixmap(pixmap)
 
     def open_password_dialog(self):
         dialog = ChangePasswordDialog(self.username)
+        dialog.exec()
+
+    def open_manual_entry(self):
+        # Open Dialog with Empty Data for Manual Entry
+        dialog = EntryDialog("", None, self.username)
+        dialog.exec()
+        
+    def handle_detection(self, text, crop_img):
+        # Triggered by AI
+        dialog = EntryDialog(text, crop_img, self.username)
         dialog.exec()
 
     def logout(self):
