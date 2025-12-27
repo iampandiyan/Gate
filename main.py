@@ -1,14 +1,16 @@
 import sys
 import os
 import cv2
+import logging
+from app_logging import setup_logging, enable_file_logging 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, 
     QWidget, QPushButton, QFrame, QStackedWidget, QListWidget, 
     QSpacerItem, QSizePolicy, QMessageBox, QLineEdit, QDateEdit, 
-    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QFormLayout
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QFormLayout, QCheckBox
 )
 from PyQt6.QtGui import QImage, QPixmap, QFont, QIcon, QAction
-from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSize, QDate
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSize, QDate, QSettings 
 
 # Import our custom modules
 from database_manager import init_db, search_entry_logs, get_all_gates
@@ -18,6 +20,8 @@ from detection_engine import AIEngine
 from entry_dialog import EntryDialog
 import time
 from camera_setup_ui import CameraSetupDialog
+
+logger = logging.getLogger(__name__)
 
 # --- WORKER THREAD (Handles Camera) ---
 class VideoThread(QThread):
@@ -56,7 +60,7 @@ class VideoThread(QThread):
                     text, conf, crop_img = self.ai.detect_and_read(frame)
                     
                     if text:
-                        print(f"🚘 Detected: {text}")
+                        logger.info("Detected plate: %s", text)
                         last_detection_time = time.time()
                         # Emit Signal to Main Thread to show Popup
                         self.plate_detected_signal.emit(text, crop_img, self.gate_name)
@@ -167,7 +171,7 @@ class SmartGateApp(QMainWindow):
         gates = get_all_gates()
         
         if not gates:
-            print("No cameras configured.")
+            logger.warning("No cameras configured.")
             return
 
         # 3. Start a thread for each
@@ -177,7 +181,7 @@ class SmartGateApp(QMainWindow):
             thread.plate_detected_signal.connect(self.handle_detection)
             thread.start()
             self.camera_threads.append(thread)
-            print(f"Started Camera: {name} on {source}")
+            logger.info("Started Camera: %s on %s", name, source)
 
     def handle_detection(self, text, crop_img):
         """
@@ -189,11 +193,11 @@ class SmartGateApp(QMainWindow):
         result = dialog.exec()
         
         if result == 1:
-            print("✅ Entry Approved")
+            logger.info("Entry approved")
             # Update the Dashboard Last Detected Label
             self.lbl_plate.setText(text)
         else:
-            print("❌ Entry Rejected")
+            logger.info("Entry rejected")
 
     def setup_sidebar(self):
         sidebar = QFrame()
@@ -317,6 +321,10 @@ class SmartGateApp(QMainWindow):
         self.txt_filter_flat.setPlaceholderText("Flat No")
         self.txt_filter_flat.setStyleSheet("padding: 5px; color: white; background: #444;")
 
+        self.txt_filter_gate = QLineEdit()
+        self.txt_filter_gate.setPlaceholderText("Gate Name")
+        self.txt_filter_gate.setStyleSheet("padding: 5px; color: white; background: #444;")
+
         # Search Button
         btn_search = QPushButton("🔍 Search")
         btn_search.setStyleSheet("background-color: #0078d7; padding: 6px 15px; font-weight: bold; border-radius: 4px;")
@@ -328,6 +336,7 @@ class SmartGateApp(QMainWindow):
         filter_layout.addWidget(self.date_to)
         filter_layout.addWidget(self.txt_filter_plate)
         filter_layout.addWidget(self.txt_filter_flat)
+        filter_layout.addWidget(self.txt_filter_gate)
         filter_layout.addWidget(btn_search)
         
         filter_frame.setLayout(filter_layout)
@@ -372,9 +381,10 @@ class SmartGateApp(QMainWindow):
         t_date = self.date_to.date().toString("yyyy-MM-dd")
         plate = self.txt_filter_plate.text().strip()
         flat = self.txt_filter_flat.text().strip()
+        gate = self.txt_filter_gate.text().strip()
 
         # 2. Query DB
-        results = search_entry_logs(f_date, t_date, plate, flat)
+        results = search_entry_logs(f_date, t_date, plate, flat, gate)
 
         # 3. Populate Table
         self.table_logs.setRowCount(0) # Clear previous
@@ -422,25 +432,72 @@ class SmartGateApp(QMainWindow):
     def create_settings_page(self):
         page = QWidget()
         layout = QVBoxLayout()
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         
-        lbl = QLabel("System Settings")
-        lbl.setStyleSheet("color: white; font-size: 20px; margin-bottom: 20px;")
-        layout.addWidget(lbl)
+        # 1. Header
+        lbl_head = QLabel("Settings")
+        lbl_head.setStyleSheet("color: white; font-size: 18px; font-weight: bold; padding: 10px;")
+        layout.addWidget(lbl_head)
 
-        btn_cam_setup = QPushButton("Configure Cameras")
-        btn_cam_setup.clicked.connect(self.open_camera_setup)
-        layout.addWidget(btn_cam_setup)
-        
-        # Change Password Button
+        # 2. Change Password Button (Existing)
         btn_pass = QPushButton("Change My Password")
         btn_pass.setFixedSize(200, 50)
         btn_pass.setStyleSheet("background-color: #444; color: white; border-radius: 5px;")
         btn_pass.clicked.connect(self.open_password_dialog)
-        
         layout.addWidget(btn_pass)
+
+        # 3. Camera Setup Button (Existing)
+        btn_cam = QPushButton("Configure Cameras")
+        btn_cam.setFixedSize(200, 50)
+        btn_cam.setStyleSheet("background-color: #0078d7; color: white; border-radius: 5px; margin-top: 10px;")
+        btn_cam.clicked.connect(self.open_camera_setup)
+        layout.addWidget(btn_cam)
+
+        # ---------------------------------------------------------
+        # 4. LOGGING SETTINGS (NEW)
+        # ---------------------------------------------------------
+        
+        # Separator
+        layout.addSpacing(20)
+        lbl_log = QLabel("System Logging")
+        lbl_log.setStyleSheet("color: #aaa; font-weight: bold; border-bottom: 1px solid #333; padding-bottom: 5px;")
+        layout.addWidget(lbl_log)
+
+        # Checkbox
+        self.chk_logging = QCheckBox("Enable Event Logging to File")
+        self.chk_logging.setStyleSheet("""
+            QCheckBox { color: white; font-size: 14px; margin-top: 10px; }
+            QCheckBox::indicator { width: 18px; height: 18px; }
+        """)
+        
+        # Load saved setting (Default: True)
+        self.settings = QSettings("SmartGateCorp", "SmartGateApp")
+        is_logging_enabled = self.settings.value("logging_enabled", True, type=bool)
+        
+        # Apply logic immediately
+        self.chk_logging.setChecked(is_logging_enabled)
+        enable_file_logging(is_logging_enabled)
+        
+        # Connect signal
+        self.chk_logging.toggled.connect(self.toggle_logging_handler)
+        
+        layout.addWidget(self.chk_logging)
+        # ---------------------------------------------------------
+
+        layout.addStretch()
         page.setLayout(layout)
         return page
+
+    def toggle_logging_handler(self, checked):
+        """Callback when user clicks the checkbox"""
+        # 1. Save to QSettings (Registry/Config file)
+        self.settings.setValue("logging_enabled", checked)
+        
+        # 2. Update Logger
+        enable_file_logging(checked)
+        
+        status = "enabled" if checked else "disabled"
+        print(f"Logging {status}") # Console confirmation
+
     
     def open_camera_setup(self):
         dialog = CameraSetupDialog()
@@ -472,19 +529,29 @@ class SmartGateApp(QMainWindow):
         dialog.exec()
 
     def logout(self):
-        reply = QMessageBox.question(self, 'Logout', 'Are you sure you want to logout?',
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
-                                     QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(self, "Logout", "Are you sure you want to logout?",
+                                     QMessageBox.StandardButton.Yes |
+                                     QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+
         if reply == QMessageBox.StandardButton.Yes:
-            self.thread.stop() # Stop camera
-            self.close() # Close Dashboard
+            # FIX: Stop all camera threads instead of the non-existent 'self.thread'
+            for t in self.camera_threads:
+                if t.isRunning():
+                    t.stop()
+                    t.wait()
+            self.camera_threads.clear()
             
+            # Close Dashboard
+            self.close() 
+
             # Restart Login
             self.login_window = LoginWindow()
             if self.login_window.exec() == 1:
                 self.new_dashboard = SmartGateApp(self.login_window.username, self.login_window.user_role)
                 self.new_dashboard.show()
-        # Inside SmartGateApp class
+            else:
+                sys.exit(0)
+
 
     def perform_recapture(self, target_thread):
         """
@@ -510,7 +577,8 @@ class SmartGateApp(QMainWindow):
 
 
     def handle_detection(self, text, crop_img, gate_name):
-        print(f"🔔 Detection at {gate_name}: {text}")
+        
+        logger.info("Detection at %s: %s", gate_name, text)
         
         # 1. Find the thread that triggered this detection
         target_thread = None
@@ -551,6 +619,16 @@ class SmartGateApp(QMainWindow):
 
 
 if __name__ == '__main__':
+    setup_logging(
+        log_dir="logs",
+        log_file_name="smartgate.log",
+        level=logging.INFO,
+        also_console=False,      # True if you still want console output
+        redirect_stdout=False,   # True if you want to capture leftover prints
+    )
+
+    logger = logging.getLogger(__name__)
+    logger.info("Application starting")
     init_db()
     app = QApplication(sys.argv)
     

@@ -5,25 +5,29 @@ import re
 import numpy as np
 from PIL import Image
 from transformers import RTDetrForObjectDetection, RTDetrImageProcessor
+import logging
+logger = logging.getLogger(__name__)
+
 
 class AIEngine:
     def __init__(self, model_path="./models/rtdetr_best"):
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        print(f"🚀 AI Engine loading on: {self.device}")
+        
+        logger.info("AI Engine loading on: %s", self.device)
         
         # 1. Load RT-DETR
         try:
             self.processor = RTDetrImageProcessor.from_pretrained(model_path)
             self.model = RTDetrForObjectDetection.from_pretrained(model_path).to(self.device)
-            print("✅ Custom RT-DETR Model Loaded")
+            logger.info("Custom RT-DETR model loaded")
         except Exception as e:
-            print(f"❌ Failed to load RT-DETR: {e}")
+            logger.exception("Failed to load RT-DETR")
             self.model = None
 
         # 2. Load EasyOCR
         # 'en' is usually sufficient for Indian plates (A-Z, 0-9)
         self.reader = easyocr.Reader(['en'], gpu=(self.device == 'cuda'))
-        print("✅ EasyOCR Loaded")
+        logger.info("EasyOCR loaded")
 
     def detect_and_read(self, frame):
         """
@@ -101,7 +105,7 @@ class AIEngine:
                 continue
             
             # === PASSED ALL CHECKS -> RUN OCR ===
-            print(f"⚡ Processing Plate (Conf: {score:.2f} | Blur: {blur_score:.0f})")
+            logger.info("Processing plate (conf=%.2f, blur=%.0f)", float(score), float(blur_score))
 
             # A. Upscale for better OCR
             scale = 2.0

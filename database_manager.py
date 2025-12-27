@@ -163,7 +163,7 @@ def log_entry_event(plate, gate, image_path, status="INSIDE"):
     conn.commit()
     conn.close()
 
-def search_entry_logs(from_date=None, to_date=None, plate=None, flat=None):
+def search_entry_logs(from_date=None, to_date=None, plate=None, flat=None, gate=None):
     """
     Search logs with optional filters.
     Dates should be string: 'YYYY-MM-DD'
@@ -201,6 +201,10 @@ def search_entry_logs(from_date=None, to_date=None, plate=None, flat=None):
     if flat:
         query += " AND r.flat_number LIKE ?"
         params.append(f"%{flat}%")
+    
+    if gate:
+        query += " AND el.gate_name LIKE ?"
+        params.append(f"%{gate}%")
 
     query += " ORDER BY el.entry_time DESC LIMIT 100"
     

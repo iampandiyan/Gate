@@ -6,6 +6,8 @@ import numpy as np
 from database_manager import get_resident_by_plate, add_new_resident, log_audit, log_entry_event
 import os
 from datetime import datetime
+import logging
+logger = logging.getLogger(__name__)
 
 class EntryDialog(QDialog):
     def __init__(self, plate_text, plate_image, current_user,recapture_callback=None, gate_name="Unknown Gate"):
@@ -179,9 +181,10 @@ class EntryDialog(QDialog):
                 # but usually self.plate_image is already BGR from the Detection Engine.
                 cv2.imwrite(full_path, self.plate_image)
                 img_path = full_path # Update path to save in DB
-                print(f"✅ Image saved: {full_path}")
+                
+                logger.info("Image saved: %s", full_path)
             except Exception as e:
-                print(f"❌ Failed to save image: {e}")
+                logger.exception("Failed to save image %s", e)
 
         # --- 4. LOG ENTRY TO DATABASE ---
         log_entry_event(final_plate, self.gate_name, img_path)
@@ -191,7 +194,7 @@ class EntryDialog(QDialog):
     def do_recapture(self):
         """Calls the main window to get a fresh frame"""
         if self.recapture_callback:
-            print("🔄 Requesting fresh frame...")
+            logger.info("Requesting fresh frame (recapture)")
             # Call the function provided by Main Window
             new_frame, new_text = self.recapture_callback()
             
@@ -205,9 +208,9 @@ class EntryDialog(QDialog):
                     self.txt_plate.setText(new_text)
                     self.plate_text = new_text
                     self.check_database() # Re-check DB with new number
-                    print(f"✅ Recaptured: {new_text}")
-                else:
-                    print("⚠ Recaptured image but no text found.")
+                    logger.info("Recaptured OCR text: %s", new_text)
+                else:                    
+                    logger.warning("Recaptured image but no OCR text found")
             else:
                 QMessageBox.warning(self, "Error", "Could not capture frame from camera.")
 
