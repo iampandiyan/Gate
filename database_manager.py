@@ -49,6 +49,14 @@ def init_db():
                     image_path TEXT,
                     status TEXT DEFAULT 'INSIDE' 
                 )''')
+    
+    # 5. GATES / CAMERAS CONFIGURATION
+    c.execute('''CREATE TABLE IF NOT EXISTS gates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    gate_name TEXT UNIQUE,
+                    camera_source TEXT,  -- '0', '1' or RTSP URL
+                    is_active INTEGER DEFAULT 1
+                )''')
 
     # --- SEED USERS ---
     
@@ -154,3 +162,82 @@ def log_entry_event(plate, gate, image_path, status="INSIDE"):
               (plate, now, gate, image_path, status))
     conn.commit()
     conn.close()
+
+def search_entry_logs(from_date=None, to_date=None, plate=None, flat=None):
+    """
+    Search logs with optional filters.
+    Dates should be string: 'YYYY-MM-DD'
+    """
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    # Base Query: Join entry_logs with residents to get Flat Number
+    query = '''
+        SELECT 
+            el.entry_time,
+            COALESCE(r.flat_number, 'Visitor') as flat_number,
+            el.plate_number,
+            el.image_path,
+            el.gate_name
+        FROM entry_logs el
+        LEFT JOIN residents r ON el.plate_number = r.plate_number
+        WHERE 1=1
+    '''
+    params = []
+
+    # Dynamic Filters
+    if from_date:
+        query += " AND date(el.entry_time) >= ?"
+        params.append(from_date)
+    
+    if to_date:
+        query += " AND date(el.entry_time) <= ?"
+        params.append(to_date)
+        
+    if plate:
+        query += " AND el.plate_number LIKE ?"
+        params.append(f"%{plate}%")
+        
+    if flat:
+        query += " AND r.flat_number LIKE ?"
+        params.append(f"%{flat}%")
+
+    query += " ORDER BY el.entry_time DESC LIMIT 100"
+    
+    c.execute(query, params)
+    results = c.fetchall()
+    conn.close()
+    return results 
+    # Returns list of tuples: (time, flat, plate, image_path, gate)
+
+def add_or_update_gate(name, source):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        # Insert or Replace
+        c.execute("INSERT OR REPLACE INTO gates (gate_name, camera_source, is_active) VALUES (?, ?, 1)", 
+                  (name, str(source)))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(e)
+        return False
+    finally:
+        conn.close()
+
+def get_all_gates():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT id, gate_name, camera_source FROM gates WHERE is_active=1")
+    gates = c.fetchall()
+    conn.close()
+    return gates # List of (id, name, source)
+
+def delete_gate(gate_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("DELETE FROM gates WHERE id=?", (gate_id,))
+    conn.commit()
+    conn.close()
+
+

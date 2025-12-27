@@ -4,10 +4,13 @@ from PyQt6.QtCore import Qt
 import cv2
 import numpy as np
 from database_manager import get_resident_by_plate, add_new_resident, log_audit, log_entry_event
+import os
+from datetime import datetime
 
 class EntryDialog(QDialog):
-    def __init__(self, plate_text, plate_image, current_user):
+    def __init__(self, plate_text, plate_image, current_user,recapture_callback=None, gate_name="Unknown Gate"):
         super().__init__()
+        self.gate_name = gate_name
         self.plate_text = plate_text if plate_text else ""
         self.original_ocr = plate_text if plate_text else "" # Empty means Manual Mode
         self.plate_image = plate_image
@@ -58,8 +61,17 @@ class EntryDialog(QDialog):
         
         self.layout.addLayout(form_layout)
 
+        self.recapture_callback = recapture_callback
+
         # 4. Action Buttons
         btn_layout = QHBoxLayout()
+        # 1. Recapture Button (NEW)
+        if self.recapture_callback:
+            self.btn_recapture = QPushButton("📷 RECAPTURE")
+            self.btn_recapture.setStyleSheet("background-color: #0078d7; padding: 15px; font-weight: bold;")
+            self.btn_recapture.clicked.connect(self.do_recapture)
+            btn_layout.addWidget(self.btn_recapture)
+
         self.btn_allow = QPushButton("✅ APPROVE ENTRY")
         self.btn_allow.setStyleSheet("background-color: green; padding: 15px; font-weight: bold;")
         self.btn_allow.clicked.connect(self.approve_entry)
@@ -132,32 +144,70 @@ class EntryDialog(QDialog):
             QMessageBox.warning(self, "Error", "License Plate is required.")
             return
 
-        # AUDIT LOGIC
+        # --- 1. AUDIT TRAIL LOGIC ---
         if not self.original_ocr:
-            # Case 1: Pure Manual Entry (Button Click)
             log_audit(self.current_user, "MANUAL_ENTRY_CREATED", f"Manually allowed {final_plate}")
         elif final_plate != self.original_ocr:
-            # Case 2: Correction (OCR said 'A', User changed to 'B')
             log_audit(self.current_user, "MANUAL_CORRECTION", 
                       f"OCR read '{self.original_ocr}', User changed to '{final_plate}'")
-        else:
-            # Case 3: Standard Approval
-            pass
 
-        # Logic for New Residents
-        if self.is_new_entry:
-            # If name/flat provided, save as resident. If empty, treat as visitor.
-            if name and flat:
-                add_new_resident(final_plate, name, flat, phone)
-                log_audit(self.current_user, "ADD_RESIDENT", f"Added new vehicle {final_plate} for Flat {flat}")
+        # --- 2. ADD NEW RESIDENT LOGIC ---
+        if self.is_new_entry and name and flat:
+            add_new_resident(final_plate, name, flat, phone)
+            log_audit(self.current_user, "ADD_RESIDENT", f"Added new vehicle {final_plate} for Flat {flat}")
 
-        # Log Entry Event
-        # If no camera image, use a black placeholder path or "Manual" string
-        img_path = "MANUAL"
-        if self.plate_image is not None:
-            img_path = f"logs_images/{final_plate}.jpg"
-            cv2.imwrite(img_path, self.plate_image)
+        # --- 3. SAVE IMAGE WITH TIMESTAMP ---
+        img_path = "MANUAL_ENTRY" # Default if no image
         
-        log_entry_event(final_plate, "Gate A", img_path)
+        if self.plate_image is not None:
+            # A. Create folder if missing
+            save_folder = "logs_images"
+            if not os.path.exists(save_folder):
+                os.makedirs(save_folder)
+            
+            # B. Create Timestamped Filename
+            # Format: PLATENUMBER_YYYYMMDD_HHMMSS.jpg
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{final_plate}_{timestamp_str}.jpg"
+            
+            # C. Full Path
+            full_path = os.path.join(save_folder, filename)
+            
+            # D. Save
+            try:
+                # Convert RGB (Qt view) back to BGR (OpenCV standard) for saving if needed, 
+                # but usually self.plate_image is already BGR from the Detection Engine.
+                cv2.imwrite(full_path, self.plate_image)
+                img_path = full_path # Update path to save in DB
+                print(f"✅ Image saved: {full_path}")
+            except Exception as e:
+                print(f"❌ Failed to save image: {e}")
+
+        # --- 4. LOG ENTRY TO DATABASE ---
+        log_entry_event(final_plate, self.gate_name, img_path)
         
         self.accept()
+
+    def do_recapture(self):
+        """Calls the main window to get a fresh frame"""
+        if self.recapture_callback:
+            print("🔄 Requesting fresh frame...")
+            # Call the function provided by Main Window
+            new_frame, new_text = self.recapture_callback()
+            
+            if new_frame is not None:
+                # Update Image Display
+                self.plate_image = new_frame
+                self.display_image(new_frame)
+                
+                # Update Text (if OCR found something new, else keep old or manual edit)
+                if new_text:
+                    self.txt_plate.setText(new_text)
+                    self.plate_text = new_text
+                    self.check_database() # Re-check DB with new number
+                    print(f"✅ Recaptured: {new_text}")
+                else:
+                    print("⚠ Recaptured image but no text found.")
+            else:
+                QMessageBox.warning(self, "Error", "Could not capture frame from camera.")
+
